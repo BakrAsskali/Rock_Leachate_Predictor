@@ -4,12 +4,11 @@ import { useState } from "react";
    TYPES
 ======================= */
 
-// Matches notebook 'rock_features'
 interface Rock {
   Rock_number: number;
   EC_rock: number;
   Ph_rock: number;
-  Corg_rock_perc: number; // Mapped to 'Corg_rock (%)' in backend
+  Corg_rock_perc: number; // Matches backend expectation
   Ca_rock: number;
   K_rock: number;
   Mg_rock: number;
@@ -31,12 +30,11 @@ interface Rock {
 interface InterventionEvent {
   id: string;
   Timestep: number;
-  Type_event: "rain" | "acid"; // Matched 'is_rain' logic
+  Type_event: "rain" | "acid";
   Acid: number;
   Temp: number;
 }
 
-// Matches notebook 'targets'
 interface LeachateResult {
   timestep: number;
   Volume_leachate: number;
@@ -65,7 +63,7 @@ const EXISTING_ROCKS: Rock[] = [
     Rock_number: 1,
     EC_rock: 150,
     Ph_rock: 7.2,
-    Corg_rock_perc: 0.5,
+    Corg_rock_perc: 0.5, // Changed from string "Granite A" to number
     Ca_rock: 12,
     K_rock: 4,
     Mg_rock: 3,
@@ -109,7 +107,7 @@ const EMPTY_ROCK: Rock = {
 };
 
 /* =======================
-   APP
+   APP COMPONENT
 ======================= */
 
 export default function App() {
@@ -119,6 +117,9 @@ export default function App() {
   const [events, setEvents] = useState<InterventionEvent[]>([]);
   const [results, setResults] = useState<LeachateResult[] | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Use your VM IP here if accessing remotely, or localhost if testing via tunnel
+  const API_URL = "http://localhost:8000/predict"; 
 
   const handleAddEvent = () => {
     setEvents(prev => [
@@ -147,31 +148,34 @@ export default function App() {
 
     const rock = inputMode === "existing" ? selectedRock : customRock;
 
-    // Fixed: Event_quantity set to 1.0 (Liters/unit) as default, similar to notebook logic
+    // Payload construction
     const payload = {
-      rock,
+      rock: rock,
       events: events.map(e => ({
         Type_event: e.Type_event,
-        Acid: e.Acid,
-        Temp: e.Temp,
-        Event_quantity: 1.0 
+        Acid: Number(e.Acid), // Ensure number
+        Temp: Number(e.Temp), // Ensure number
+        Event_quantity: 1.0   // Default volume
       }))
     };
 
     try {
-      const res = await fetch("http://localhost:8000/predict", {
+      const res = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
 
-      if (!res.ok) throw new Error("API Failed");
+      if (!res.ok) {
+         const errText = await res.text();
+         throw new Error(`Server Error: ${errText}`);
+      }
       
       const data = await res.json();
       setResults(data);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("Error connecting to backend");
+      alert("Failed to fetch prediction: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -194,7 +198,7 @@ export default function App() {
         {/* INPUT SECTION */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* LEFT: ROCK & EVENTS (4 cols) */}
+          {/* LEFT: ROCK & EVENTS (5 cols) */}
           <div className="lg:col-span-5 space-y-6">
             
             {/* Rock Selection */}
@@ -242,7 +246,6 @@ export default function App() {
                 </select>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
-                    {/* Simplified Custom Inputs - add more if needed */}
                     <div>
                         <label className="text-xs font-bold text-slate-500">SiO2 (%)</label>
                         <input type="number" className="w-full border rounded p-1" 
