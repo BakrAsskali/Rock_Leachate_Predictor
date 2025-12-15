@@ -42,6 +42,7 @@ class PredictionRequest(BaseModel):
     events: List[Event]
 
 # ---- Prediction endpoint ----
+# ---- Prediction endpoint ----
 @app.post("/predict")
 def predict(req: PredictionRequest):
 
@@ -59,12 +60,17 @@ def predict(req: PredictionRequest):
             "Acid": evt.Acid,
             "Temp": evt.Temp,
             "Timestep": i,
-            "is_rain": 1 if evt.Type_event == "rain" else 0,
+            "is_rain": 1 if evt.Type_event == "rain" else 0,  # numeric
+            "is_acid": 1 if evt.Type_event == "acid" else 0,  # numeric
             "cum_water": cum_water,
             "cum_acid_load": cum_acid
         })
 
     X = pd.DataFrame(rows)
+
+    # Drop original string column to avoid XGBoost error
+    if "Type_event" in X.columns:
+        X = X.drop(columns=["Type_event"])
 
     predictions = []
     for i in range(len(X)):
@@ -76,3 +82,4 @@ def predict(req: PredictionRequest):
         })
 
     return predictions
+
