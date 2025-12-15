@@ -1,10 +1,10 @@
 import joblib
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 app = FastAPI()
 
@@ -19,7 +19,7 @@ app.add_middleware(
 
 # ---- Load Trained Model ----
 # The error indicated this is a MultiOutputRegressor, not a dictionary
-MODEL = joblib.load("leachate_model.pkl") 
+MODEL = joblib.load("./Models/leachate_model.pkl")
 
 # ---- Constants ----
 # These must match the order in your training notebook EXACTLY
@@ -29,6 +29,7 @@ ROCK_FEATURES = [
     'Fe2O3_rock', 'TiO2_rock', 'MnO_rock', 'CaO_rock', 'MgO_rock',
     'Na2O_rock', 'K2O_rock', 'SO3_rock', 'P2O5_rock'
 ]
+
 
 ENV_FEATURES = [
     'Event_quantity', 'Acid', 'Temp', 'Timestep', 
@@ -43,6 +44,7 @@ TARGET_NAMES = [
     'Phosphate_leachate', 'Ca_leachate', 'Fe_leachate', 'K_leachate',
     'Mg_leachate', 'Mn_leachate', 'Na_leachate'
 ]
+TARGET_MODELS = {name: joblib.load(f"./Models/{name}.pkl") for name in TARGET_NAMES}
 
 # ---- Input Schemas ----
 class Rock(BaseModel):
@@ -78,16 +80,16 @@ class PredictionRequest(BaseModel):
 
 # ---- Prediction Endpoint ----
 @app.post("/predict")
-def predict(req: PredictionRequest):
+def predict(req: PredictionRequest, model: Optional[str] = Query("multioutput", description="Choose 'multioutput' or 'lightgbm'")):
     rows = []
     cum_water = 0.0
     cum_acid = 0.0
 
-    # 1. Prepare Input Data
+    # 1️⃣ Prepare input rows
     for i, evt in enumerate(req.events, start=1):
         cum_water += evt.Event_quantity
         cum_acid += evt.Event_quantity * evt.Acid
-        is_rain = 1 if evt.Type_event == "rain" else 0
+        is_rain = 1 if evt.Type_event.lower() == "rain" else 0
 
         row = {
             "EC_rock": req.rock.EC_rock,
@@ -119,46 +121,36 @@ def predict(req: PredictionRequest):
         }
         rows.append(row)
 
-    # 2. Create DataFrame & Ensure Column Order
     X = pd.DataFrame(rows)
-    
-    # Combine feature lists to ensure order matches training
     full_feature_order = ROCK_FEATURES + ENV_FEATURES
-    
-    # Add missing columns with 0 if necessary (safety check)
     for col in full_feature_order:
         if col not in X.columns:
-            X[col] = 0
-            
+            X[col] = 0.0
     X = X[full_feature_order]
 
-    # 3. Predict
-    # MultiOutputRegressor returns a numpy array: [[val1, val2, ...], [val1, val2, ...]]
-    # Each row is a timestep, each column is a target variable
-    try:
-        raw_predictions = MODEL.predict(X)
-    except Exception as e:
-        return {"error": str(e), "message": "Model prediction failed. Check feature alignment."}
-
-    # 4. Format Results
     results = []
-    for i in range(len(X)):
-        # Get the array of predictions for this specific timestep (row)
-        pred_row = raw_predictions[i]
-        
-        step_result = {
-            "timestep": i + 1,
-            "Explanation": "Predicted based on cumulative rock weathering."
-        }
-        
-        # Map the numeric index of the prediction to the target name
-        for target_index, target_name in enumerate(TARGET_NAMES):
-            if target_index < len(pred_row):
-                val = float(pred_row[target_index])
-                step_result[target_name] = max(0.0, val) # Prevent negative concentrations
-            else:
-                step_result[target_name] = 0.0
 
-        results.append(step_result)
+    if model.lower() == "multioutput":
+        # 2️⃣ Use MultiOutputRegressor model
+        raw_predictions = MODEL.predict(X)
+        for i in range(len(X)):
+            pred_row = raw_predictions[i]
+            step_result = {"timestep": i + 1, "Explanation": "Predicted with MultiOutputRegressor."}
+            for target_index, target_name in enumerate(TARGET_NAMES):
+                step_result[target_name] = max(0.0, float(pred_row[target_index])) if target_index < len(pred_row) else 0.0
+            results.append(step_result)
+
+    elif model.lower() == "lightgbm":
+        # 2️⃣ Use separate LightGBM models
+        all_preds = {target: TARGET_MODELS[target].predict(X) for target in TARGET_NAMES}
+        num_rows = len(X)
+        for i in range(num_rows):
+            step_result = {"timestep": i + 1, "Explanation": "Predicted with LightGBM per target."}
+            for target_name in TARGET_NAMES:
+                step_result[target_name] = max(0.0, float(all_preds[target_name][i]))
+            results.append(step_result)
+
+    else:
+        return {"error": "Invalid model type. Choose 'multioutput' or 'lightgbm'."}
 
     return results
