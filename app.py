@@ -96,14 +96,16 @@ def predict(req: PredictionRequest):
     ]
     X = X[feature_order]
 
-    # Predict
     predictions = []
     for i in range(len(X)):
-        val = MODEL.predict(X.iloc[[i]])[0]
+        # convert to 2D numpy array to avoid TypeError
+        row_np = X.iloc[[i]].to_numpy()
+        val = MODEL.predict(row_np)[0]
         predictions.append({
             "timestep": i + 1,
             "prediction": max(0, float(val)),
             "Explanation": "Prediction mainly driven by cumulative acid exposure and temperature."
         })
+
 
     return predictions
