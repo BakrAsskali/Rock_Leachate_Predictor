@@ -9,7 +9,7 @@ from typing import List
 app = FastAPI()
 
 # ---- Load trained models ----
-MODELS = joblib.load("Models/leachate_models.pkl")  # dict[target -> XGBRegressor]
+MODELS = joblib.load("Models/leachate_model.pkl")  # dict[target -> XGBRegressor]
 
 TARGETS = list(MODELS.keys())
 
