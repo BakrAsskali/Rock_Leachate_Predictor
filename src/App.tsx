@@ -246,6 +246,15 @@ const EMPTY_ROCK: Rock = {
 };
 
 /* =======================
+   HELPER FUNCTIONS
+======================= */
+
+// Fix: Use simple random ID generation for non-secure contexts (HTTP/IP)
+const generateId = () => {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2);
+};
+
+/* =======================
    APP COMPONENT
 ======================= */
 
@@ -258,13 +267,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [mlModel, setMlModel] = useState<"xgboost" | "lightgbm">("xgboost");
 
-  const API_URL = "http://localhost:8000/predict";
+  // Fix: Use the VM IP address so browser can connect from outside localhost
+  const API_URL = "http://20.199.20.62:8000/predict";
 
   const handleAddEvent = () => {
     setEvents((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: generateId(), // Fix: Replaced crypto.randomUUID()
         Timestep: prev.length + 1,
         Type_event: "rain",
         Acid: 0,
@@ -281,46 +291,47 @@ export default function App() {
     setEvents((prev) => prev.filter((e) => e.id !== id));
   };
 
-const handleRunSimulation = async () => {
-  setLoading(true);
-  setResults(null);
+  const handleRunSimulation = async () => {
+    setLoading(true);
+    setResults(null);
 
-  const rock = inputMode === "existing" ? selectedRock : customRock;
+    const rock = inputMode === "existing" ? selectedRock : customRock;
 
-  const payload = {
-    rock,
-    events: events.map((e) => ({
-      Type_event: e.Type_event,
-      Acid: e.Acid,
-      Temp: e.Temp,
-      Event_quantity: 1,
-    })),
-  };
+    const payload = {
+      rock,
+      events: events.map((e) => ({
+        Type_event: e.Type_event,
+        Acid: e.Acid,
+        Temp: e.Temp,
+        Event_quantity: 1,
+      })),
+    };
 
-  // Choose API based on selected model
-  const apiUrl = mlModel === "xgboost" ? "http://localhost:8000/predict?model=multioutput" : "http://localhost:8000/predict?model=lightgbm";
+    // Construct URL with model query parameter
+    const modelParam = mlModel === "xgboost" ? "multioutput" : "lightgbm";
+    const fullUrl = `${API_URL}?model=${modelParam}`;
 
-  try {
-    const res = await fetch(apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    try {
+      const res = await fetch(fullUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Server Error: ${errText}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Server Error: ${errText}`);
+      }
+
+      const data = await res.json();
+      setResults(data);
+    } catch (err: any) {
+      console.error(err);
+      alert("Failed to fetch prediction: " + err.message);
+    } finally {
+      setLoading(false);
     }
-
-    const data = await res.json();
-    setResults(data);
-  } catch (err: any) {
-    console.error(err);
-    alert("Failed to fetch prediction: " + err.message);
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
 
   return (
