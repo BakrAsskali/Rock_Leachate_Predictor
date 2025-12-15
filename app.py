@@ -1,6 +1,5 @@
 # app.py
 import joblib
-import numpy as np
 import pandas as pd
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -8,10 +7,8 @@ from typing import List
 
 app = FastAPI()
 
-# ---- Load trained models ----
-MODELS = joblib.load("Models/leachate_model.pkl")  # dict[target -> XGBRegressor]
-
-TARGETS = list(MODELS.keys())
+# ---- Load trained model ----
+MODEL = joblib.load("Models/leachate_model.pkl")  # single XGBRegressor
 
 # ---- Input schemas ----
 class Rock(BaseModel):
@@ -38,7 +35,7 @@ class Event(BaseModel):
     Type_event: str
     Acid: int
     Temp: float
-    Event_quantity: float = 1.0  # default if user doesn’t specify
+    Event_quantity: float = 1.0
 
 class PredictionRequest(BaseModel):
     rock: Rock
@@ -56,7 +53,7 @@ def predict(req: PredictionRequest):
         cum_water += evt.Event_quantity
         cum_acid += evt.Event_quantity * evt.Acid
 
-        row = {
+        rows.append({
             **req.rock.dict(),
             "Type_event": evt.Type_event,
             "Acid": evt.Acid,
@@ -65,24 +62,17 @@ def predict(req: PredictionRequest):
             "is_rain": 1 if evt.Type_event == "rain" else 0,
             "cum_water": cum_water,
             "cum_acid_load": cum_acid
-        }
-        rows.append(row)
+        })
 
     X = pd.DataFrame(rows)
 
     predictions = []
     for i in range(len(X)):
-        res = {"timestep": i + 1}
-
-        for target, model in MODELS.items():
-            val = model.predict(X.iloc[[i]])[0]
-            res[target] = max(0, float(val))
-
-        # simple explanation
-        res["Explanation"] = (
-            "Prediction mainly driven by cumulative acid exposure and temperature."
-        )
-
-        predictions.append(res)
+        val = MODEL.predict(X.iloc[[i]])[0]
+        predictions.append({
+            "timestep": i + 1,
+            "prediction": max(0, float(val)),
+            "Explanation": "Prediction mainly driven by cumulative acid exposure and temperature."
+        })
 
     return predictions
