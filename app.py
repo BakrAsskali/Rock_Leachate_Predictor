@@ -1,15 +1,14 @@
-# app.py
 import joblib
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List
 
 app = FastAPI()
 
-# ---- CORS Middleware ----
+# ---- CORS Configuration ----
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,11 +17,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---- Load trained models ----
-# Assuming the pickle contains the dictionary: {'Volume_leachate': model, 'Ph_leachate': model, ...}
-MODELS = joblib.load("Models/leachate_model.pkl")
+# ---- Load Trained Model ----
+# The error indicated this is a MultiOutputRegressor, not a dictionary
+MODEL = joblib.load("leachate_model.pkl") 
 
-# ---- Constants from Notebook ----
+# ---- Constants ----
+# These must match the order in your training notebook EXACTLY
 ROCK_FEATURES = [
     'EC_rock', 'Ph_rock', 'Corg_rock (%)', 'Ca_rock', 'K_rock',
     'Mg_rock', 'Na_rock', 'SAR_rock', 'SiO2_rock', 'Al2O3_rock',
@@ -30,19 +30,25 @@ ROCK_FEATURES = [
     'Na2O_rock', 'K2O_rock', 'SO3_rock', 'P2O5_rock'
 ]
 
-TARGETS = [
+ENV_FEATURES = [
+    'Event_quantity', 'Acid', 'Temp', 'Timestep', 
+    'is_rain', 'cum_water', 'cum_acid_load'
+]
+
+# The model outputs an array of values. We need to know which index corresponds to which target.
+# This order MUST match the 'targets' list in your notebook.
+TARGET_NAMES = [
     'Volume_leachate', 'EC_leachate', 'Ph_leachate', 'Chloride_leachate',
     'Carbonate_leachate', 'Sulfate_leachate', 'Nitrate_leachate',
     'Phosphate_leachate', 'Ca_leachate', 'Fe_leachate', 'K_leachate',
     'Mg_leachate', 'Mn_leachate', 'Na_leachate'
 ]
 
-# ---- Input schemas ----
+# ---- Input Schemas ----
 class Rock(BaseModel):
-    # Mapping Pydantic fields to exact Notebook column names
     EC_rock: float
     Ph_rock: float
-    Corg_rock_perc: float  # Will map to 'Corg_rock (%)'
+    Corg_rock_perc: float
     Ca_rock: float
     K_rock: float
     Mg_rock: float
@@ -61,8 +67,8 @@ class Rock(BaseModel):
     P2O5_rock: float
 
 class Event(BaseModel):
-    Type_event: str  # "rain" or "acid"
-    Acid: float      # Notebook treats Acid as numeric (load/concentration)
+    Type_event: str
+    Acid: float
     Temp: float
     Event_quantity: float = 1.0
 
@@ -70,29 +76,23 @@ class PredictionRequest(BaseModel):
     rock: Rock
     events: List[Event]
 
-# ---- Prediction endpoint ----
+# ---- Prediction Endpoint ----
 @app.post("/predict")
 def predict(req: PredictionRequest):
     rows = []
-    
-    # Initialize cumulative trackers (Engineering Features)
     cum_water = 0.0
     cum_acid = 0.0
 
+    # 1. Prepare Input Data
     for i, evt in enumerate(req.events, start=1):
-        # 1. Calculate Cumulative Features (Logic from 'engineer_features' in notebook)
         cum_water += evt.Event_quantity
         cum_acid += evt.Event_quantity * evt.Acid
-        
-        # 2. Map 'rain'/'acid' to is_rain (Logic from 'load_and_clean')
         is_rain = 1 if evt.Type_event == "rain" else 0
 
-        # 3. Build Row Dictionary
         row = {
-            # Rock Features
             "EC_rock": req.rock.EC_rock,
             "Ph_rock": req.rock.Ph_rock,
-            "Corg_rock (%)": req.rock.Corg_rock_perc, # Renamed variable
+            "Corg_rock (%)": req.rock.Corg_rock_perc,
             "Ca_rock": req.rock.Ca_rock,
             "K_rock": req.rock.K_rock,
             "Mg_rock": req.rock.Mg_rock,
@@ -109,60 +109,56 @@ def predict(req: PredictionRequest):
             "K2O_rock": req.rock.K2O_rock,
             "SO3_rock": req.rock.SO3_rock,
             "P2O5_rock": req.rock.P2O5_rock,
-            
-            # Environmental Features
             "Event_quantity": evt.Event_quantity,
             "Acid": evt.Acid,
             "Temp": evt.Temp,
             "Timestep": i,
-            
-            # Engineered Features
             "is_rain": is_rain,
             "cum_water": cum_water,
             "cum_acid_load": cum_acid
         }
         rows.append(row)
 
-    # Convert to DataFrame
+    # 2. Create DataFrame & Ensure Column Order
     X = pd.DataFrame(rows)
-
-    # 4. Reorder columns to match training Feature list
-    # Based on notebook logic: Rock + Env + Engineered
-    feature_order = ROCK_FEATURES + [
-        'Event_quantity', 'Acid', 'Temp', 'Timestep', 
-        'is_rain', 'cum_water', 'cum_acid_load'
-    ]
     
-    # Ensure all columns exist (fill 0 if missing, though they shouldn't be)
-    for col in feature_order:
+    # Combine feature lists to ensure order matches training
+    full_feature_order = ROCK_FEATURES + ENV_FEATURES
+    
+    # Add missing columns with 0 if necessary (safety check)
+    for col in full_feature_order:
         if col not in X.columns:
             X[col] = 0
             
-    X = X[feature_order]
+    X = X[full_feature_order]
 
-    # 5. Generate Predictions for ALL Targets
+    # 3. Predict
+    # MultiOutputRegressor returns a numpy array: [[val1, val2, ...], [val1, val2, ...]]
+    # Each row is a timestep, each column is a target variable
+    try:
+        raw_predictions = MODEL.predict(X)
+    except Exception as e:
+        return {"error": str(e), "message": "Model prediction failed. Check feature alignment."}
+
+    # 4. Format Results
     results = []
-    
-    # We iterate row by row to structure the response by timestep
     for i in range(len(X)):
-        row_np = X.iloc[[i]] # Keep as DataFrame for XGBoost feature names
+        # Get the array of predictions for this specific timestep (row)
+        pred_row = raw_predictions[i]
         
         step_result = {
             "timestep": i + 1,
-            "Explanation": "Based on cumulative water and acid load."
+            "Explanation": "Predicted based on cumulative rock weathering."
         }
         
-        # Iterate over every target defined in the notebook
-        for target in TARGETS:
-            if target in MODELS:
-                # Predict
-                val = MODELS[target].predict(row_np)[0]
-                # Enforce non-negative physics (concentration cannot be < 0)
-                step_result[target] = max(0.0, float(val))
+        # Map the numeric index of the prediction to the target name
+        for target_index, target_name in enumerate(TARGET_NAMES):
+            if target_index < len(pred_row):
+                val = float(pred_row[target_index])
+                step_result[target_name] = max(0.0, val) # Prevent negative concentrations
             else:
-                # If model missing (e.g., all training data was 0), return 0
-                step_result[target] = 0.0
-        
+                step_result[target_name] = 0.0
+
         results.append(step_result)
 
     return results
